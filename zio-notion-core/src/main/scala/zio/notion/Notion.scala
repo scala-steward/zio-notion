@@ -241,10 +241,15 @@ object Notion {
   )(implicit trace: Trace): ZIO[Notion, NotionError, Page] =
     ZIO.service[Notion].flatMap(_.createPageInDatabase(parent, properties, icon, cover))
 
-  val live: URLayer[NotionClient, Notion] = ZLayer(ZIO.service[NotionClient].map(LiveNotion))
+  val live: URLayer[NotionClient, Notion] = ZLayer(ZIO.service[NotionClient].map(client => LiveNotion(client)))
 
   def layerWith(bearer: String): Layer[Throwable, Notion] =
     AsyncHttpClientZioBackend.layer() ++ ZLayer.succeed(NotionConfiguration(bearer)) >>> NotionClient.live >>> Notion.live
+
+//  def layerWith[R](bearer: String, applyMiddleware: LiveNotionClient[Any] => LiveNotionClient[R]): Layer[Throwable, Notion] =
+//    AsyncHttpClientZioBackend.layer() ++ ZLayer.succeed(NotionConfiguration(bearer)) >>>
+//      ZLayer(NotionClient.default.map(applyMiddleware)) >>>
+//      Notion.live
 
   final case class LiveNotion(notionClient: NotionClient) extends Notion {
     private def decodeResponse[T: Decoder](request: IO[NotionError, NotionResponse]): IO[NotionError, T] = request.flatMap(decodeJson[T])

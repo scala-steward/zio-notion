@@ -122,28 +122,39 @@ object NotionClient {
       } yield LiveNotionClient(config, sttpClient)
     }
 
-  final case class LiveNotionClient(config: NotionConfiguration, sttpClient: SttpClient) extends NotionClient {
+  type NotionRequest  = Request[Either[String, String], Any]
+  type Middleware[-R] = NotionRequest => URIO[R, Unit]
+
+  final case class LiveNotionClient(
+      config:     NotionConfiguration,
+      sttpClient: SttpClient
+  ) extends NotionClient {
     val endpoint: Uri = uri"https://api.notion.com/v1"
 
-    implicit private class RequestOps(request: Request[Either[String, String], Any]) {
+    implicit private class RequestOps(request: NotionRequest) {
 
-      def handle: IO[NotionError, NotionResponse] =
-        sttpClient
-          .send(request)
-          .mapError(t => ConnectionError(t))
-          .flatMap(response =>
-            response.code match {
-              case code if code.isSuccess => ZIO.succeed(response.body.merge)
-              case _ =>
-                val error =
-                  decode[NotionClientError](response.body.merge) match {
-                    case Left(error)  => JsonError(error)
-                    case Right(error) => NotionError.HttpError(request.toCurl, error.status, error.code, error.message)
-                  }
+      def handle: IO[NotionError, NotionResponse] = {
+        val requestNotion =
+          sttpClient
+            .send(request)
+            .mapError(t => ConnectionError(t))
+            .flatMap(response =>
+              response.code match {
+                case code if code.isSuccess => ZIO.succeed(response.body.merge)
+                case _ =>
+                  val error =
+                    decode[NotionClientError](response.body.merge) match {
+                      case Left(error)  => JsonError(error)
+                      case Right(error) => NotionError.HttpError(request.toCurl, error.status, error.code, error.message)
+                    }
 
-                ZIO.fail(error)
-            }
-          )
+                  ZIO.fail(error)
+              }
+            )
+
+        // middlewares.map(middleware => middleware(request)).reduce(_ <&> _) <&>
+        requestNotion
+      }
     }
 
     private def defaultRequest: RequestT[Empty, Either[String, String], Any] =
