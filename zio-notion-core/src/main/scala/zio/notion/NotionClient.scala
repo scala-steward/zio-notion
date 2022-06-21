@@ -13,7 +13,7 @@ import zio.notion.NotionClient.NotionResponse
 import zio.notion.NotionError._
 import zio.notion.model.common.{Cover, Icon}
 import zio.notion.model.common.Parent.{DatabaseId, PageId}
-import zio.notion.model.common.richtext.RichTextData
+import zio.notion.model.common.richtext.RichTextFragment
 import zio.notion.model.database.Database
 import zio.notion.model.database.PatchedPropertyDefinition.PropertySchema
 import zio.notion.model.database.query.Query
@@ -39,7 +39,7 @@ trait NotionClient {
 
   def createDatabase(
       pageId: String,
-      title: Seq[RichTextData],
+      title: Seq[RichTextFragment],
       icon: Option[Icon],
       cover: Option[Cover],
       properties: Map[String, PropertySchema]
@@ -119,42 +119,35 @@ object NotionClient {
       for {
         config     <- ZIO.service[NotionConfiguration]
         sttpClient <- ZIO.service[SttpClient]
-      } yield LiveNotionClient(config, sttpClient)
+      } yield LiveNotionClientImpl(config, sttpClient)
     }
 
-  type NotionRequest  = Request[Either[String, String], Any]
-  type Middleware[-R] = NotionRequest => URIO[R, Unit]
+  final case class LiveNotionClientImpl(config: NotionConfiguration, sttpClient: SttpClient)
+      extends LiveNotionClient(config: NotionConfiguration, sttpClient: SttpClient)
 
-  final case class LiveNotionClient(
-      config:     NotionConfiguration,
-      sttpClient: SttpClient
-  ) extends NotionClient {
+  abstract class LiveNotionClient(config: NotionConfiguration, sttpClient: SttpClient) extends NotionClient { // scalafix:ok
     val endpoint: Uri = uri"https://api.notion.com/v1"
 
+    def apply(request: NotionRequest): IO[NotionError, NotionResponse] =
+      sttpClient
+        .send(request)
+        .mapError(t => ConnectionError(t))
+        .flatMap(response =>
+          response.code match {
+            case code if code.isSuccess => ZIO.succeed(response.body.merge)
+            case _ =>
+              val error =
+                decode[NotionClientError](response.body.merge) match {
+                  case Left(error)  => JsonError(error)
+                  case Right(error) => NotionError.HttpError(request.toCurl, error.status, error.code, error.message)
+                }
+
+              ZIO.fail(error)
+          }
+        )
+
     implicit private class RequestOps(request: NotionRequest) {
-
-      def handle: IO[NotionError, NotionResponse] = {
-        val requestNotion =
-          sttpClient
-            .send(request)
-            .mapError(t => ConnectionError(t))
-            .flatMap(response =>
-              response.code match {
-                case code if code.isSuccess => ZIO.succeed(response.body.merge)
-                case _ =>
-                  val error =
-                    decode[NotionClientError](response.body.merge) match {
-                      case Left(error)  => JsonError(error)
-                      case Right(error) => NotionError.HttpError(request.toCurl, error.status, error.code, error.message)
-                    }
-
-                  ZIO.fail(error)
-              }
-            )
-
-        // middlewares.map(middleware => middleware(request)).reduce(_ <&> _) <&>
-        requestNotion
-      }
+      def handle: IO[NotionError, NotionResponse] = apply(request)
     }
 
     private def defaultRequest: RequestT[Empty, Either[String, String], Any] =
@@ -238,7 +231,7 @@ object NotionClient {
 
     override def createDatabase(
         pageId: String,
-        title: Seq[RichTextData],
+        title: Seq[RichTextFragment],
         icon: Option[Icon],
         cover: Option[Cover],
         properties: Map[String, PropertySchema]

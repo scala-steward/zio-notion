@@ -1,6 +1,5 @@
 package zio.notion.wrapper
 
-import zio._
 
 sealed trait Wrapper[-R]
 
